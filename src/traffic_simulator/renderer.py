@@ -214,7 +214,20 @@ class Renderer:
                 (pos[0] - cos_a * hw + sin_a * hh, pos[1] - sin_a * hw - cos_a * hh),
                 (pos[0] - cos_a * hw - sin_a * hh, pos[1] - sin_a * hw + cos_a * hh),
             ]
-            pygame.draw.polygon(self.screen, v.color, corners)
+
+            # Emergency collision state - flash entire vehicle
+            if v.in_collision:
+                # Calculate blink phase (0.0 to 1.0)
+                blink_cycle = (v.emergency_blink_phase / EMERGENCY_BLINK_RATE) % 1.0
+                if blink_cycle < 0.5:
+                    # Flash bright yellow during first half of cycle
+                    pygame.draw.polygon(self.screen, (255, 220, 0), corners)
+                else:
+                    # Normal color during second half
+                    pygame.draw.polygon(self.screen, v.color, corners)
+            else:
+                # Normal rendering
+                pygame.draw.polygon(self.screen, v.color, corners)
             # windshield dot
             front = lerp_pt(pos, (pos[0] + cos_a * hw, pos[1] + sin_a * hw), 0.5)
             pygame.draw.circle(self.screen, (180, 220, 255), (int(front[0]), int(front[1])), 2)

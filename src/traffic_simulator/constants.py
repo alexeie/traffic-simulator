@@ -46,3 +46,11 @@ C_CAR_COLORS = [
 
 # Driver behavior distribution
 HAZARDOUS_DRIVER_RATIO = 0.2  # 20% of drivers are hazardous, 80% normal
+
+# Collision detection and avoidance
+COLLISION_DETECTION_RADIUS = 10.0      # pixels, for direct collision (slightly smaller than car length)
+SAFE_FOLLOWING_DISTANCE_NORMAL = 25.0  # pixels, minimum gap for normal drivers (blue)
+SAFE_FOLLOWING_DISTANCE_HAZARDOUS = 12.0  # pixels, minimum gap for hazardous drivers (red) - much closer!
+COLLISION_RECOVERY_TIME = 3.0          # seconds, how long to stop after collision
+COLLISION_IMMUNITY_TIME = 2.0          # seconds, immunity period after recovery to prevent re-collision
+EMERGENCY_BLINK_RATE = 0.25            # seconds per blink cycle

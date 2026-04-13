@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
-from traffic_simulator.constants import C_CAR_COLORS, HAZARDOUS_DRIVER_RATIO
+from traffic_simulator.constants import (
+    C_CAR_COLORS, HAZARDOUS_DRIVER_RATIO,
+    COLLISION_DETECTION_RADIUS,
+    SAFE_FOLLOWING_DISTANCE_NORMAL, SAFE_FOLLOWING_DISTANCE_HAZARDOUS,
+    COLLISION_RECOVERY_TIME, COLLISION_IMMUNITY_TIME, EMERGENCY_BLINK_RATE
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -104,6 +109,12 @@ class Vehicle:
     alive: bool = True
     behavior: DriverBehavior = DriverBehavior.NORMAL  # driver type
     stop_timer: float = 0.0  # for intermittent hazardous stops
+    # Collision system fields
+    in_collision: bool = False           # Currently in post-collision recovery
+    collision_timer: float = 0.0         # Countdown for recovery duration
+    emergency_blink_phase: float = 0.0   # Accumulator for blink animation
+    collision_immune: bool = False       # Temporary immunity after recovery
+    immunity_timer: float = 0.0          # Countdown for immunity period
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +291,29 @@ class World:
             current = next_node
 
     def _tick_vehicle(self, v: Vehicle, dt: float) -> None:
+        # Handle collision immunity period (after recovery)
+        if v.collision_immune:
+            v.immunity_timer -= dt
+            if v.immunity_timer <= 0:
+                v.collision_immune = False
+                v.immunity_timer = 0.0
+
+        # Handle collision recovery state
+        if v.in_collision:
+            v.collision_timer -= dt
+            v.emergency_blink_phase += dt
+            v.current_speed = 0.0  # Stay stopped
+            v.waiting = True       # Show waiting indicator
+
+            if v.collision_timer <= 0:
+                # Recovery complete, resume normal driving with immunity
+                v.in_collision = False
+                v.waiting = False
+                v.emergency_blink_phase = 0.0
+                v.collision_immune = True
+                v.immunity_timer = COLLISION_IMMUNITY_TIME
+            return  # Skip normal movement logic during recovery
+
         # Get current and next nodes
         na = self.nodes.get(v.current_node_id)
         nb = self.nodes.get(v.next_node_id)
@@ -331,27 +365,61 @@ class World:
                         should_stop = random.random() > 0.2  # 80% obey, 20% run red
                     # Never stop for yellow lights
 
-        # Check if approaching a sharp turn (when t > 0.6)
-        target_speed = v.max_speed
-        if v.t > 0.6 and v.planned_route:
-            # Look ahead to see what the turn angle will be
-            next_node_id = v.planned_route[0]
-            next_node = self.nodes.get(next_node_id)
-            if next_node:
-                # Calculate turn angle
-                angle_in = angle_of(na.pos, nb.pos)
-                angle_out = angle_of(nb.pos, next_node.pos)
-                turn_angle = abs(angle_out - angle_in)
-                # Normalize to 0-π range
-                if turn_angle > math.pi:
-                    turn_angle = 2 * math.pi - turn_angle
+        # Determine safe following distance based on driver behavior
+        safe_distance = (SAFE_FOLLOWING_DISTANCE_HAZARDOUS
+                         if v.behavior == DriverBehavior.HAZARDOUS
+                         else SAFE_FOLLOWING_DISTANCE_NORMAL)
 
-                # Sharp turn if angle > 45 degrees (π/4)
-                if turn_angle > math.pi / 4:
-                    # Reduce target speed based on sharpness
-                    # 45° turn: 70% speed, 90° turn: 40% speed
-                    turn_factor = 1.0 - (turn_angle / math.pi) * 0.6
-                    target_speed = v.max_speed * max(0.4, turn_factor)
+        # Check for vehicle ahead and apply collision avoidance
+        vehicle_ahead = self._get_vehicle_ahead(v, safe_distance + 20)
+        collision_avoidance = False
+
+        if vehicle_ahead:
+            other_vehicle, distance = vehicle_ahead
+
+            # Direct collision check (skip if either vehicle is immune)
+            if not v.collision_immune and not other_vehicle.collision_immune:
+                if self._check_collision(v, other_vehicle):
+                    # COLLISION! Both vehicles enter emergency state
+                    if not other_vehicle.in_collision:  # Avoid double-trigger
+                        v.in_collision = True
+                        v.collision_timer = COLLISION_RECOVERY_TIME
+                        v.emergency_blink_phase = 0.0
+                        other_vehicle.in_collision = True
+                        other_vehicle.collision_timer = COLLISION_RECOVERY_TIME
+                        other_vehicle.emergency_blink_phase = 0.0
+                    return  # Immediate stop, skip rest of tick
+
+            # Collision avoidance: brake based on distance and behavior
+            if distance < safe_distance:
+                collision_avoidance = True
+                v.waiting = True
+                # Calculate braking intensity: closer = harder brake
+                brake_factor = 1.0 - (distance / safe_distance)  # 0.0 to 1.0
+                target_speed = v.current_speed * (1.0 - brake_factor * 0.8)  # Reduce up to 80%
+
+        # Check if approaching a sharp turn (when t > 0.6)
+        if not collision_avoidance:  # Only set default if not avoiding collision
+            target_speed = v.max_speed
+            if v.t > 0.6 and v.planned_route:
+                # Look ahead to see what the turn angle will be
+                next_node_id = v.planned_route[0]
+                next_node = self.nodes.get(next_node_id)
+                if next_node:
+                    # Calculate turn angle
+                    angle_in = angle_of(na.pos, nb.pos)
+                    angle_out = angle_of(nb.pos, next_node.pos)
+                    turn_angle = abs(angle_out - angle_in)
+                    # Normalize to 0-π range
+                    if turn_angle > math.pi:
+                        turn_angle = 2 * math.pi - turn_angle
+
+                    # Sharp turn if angle > 45 degrees (π/4)
+                    if turn_angle > math.pi / 4:
+                        # Reduce target speed based on sharpness
+                        # 45° turn: 70% speed, 90° turn: 40% speed
+                        turn_factor = 1.0 - (turn_angle / math.pi) * 0.6
+                        target_speed = v.max_speed * max(0.4, turn_factor)
 
         # Hazardous drivers: random intermittent stops (0.1% chance per frame when moving)
         if v.behavior == DriverBehavior.HAZARDOUS and v.current_speed > 10:
@@ -375,6 +443,9 @@ class World:
             v.current_speed = max(0, v.current_speed - v.acceleration * dt * 2)  # Brake harder
             if v.current_speed < 1:
                 return  # Stopped at light
+        elif collision_avoidance:
+            # Decelerate for vehicle ahead
+            v.current_speed = max(target_speed, v.current_speed - v.acceleration * dt * 1.5)
         elif v.current_speed > target_speed:
             # Decelerate for upcoming turn
             v.waiting = False
@@ -441,6 +512,46 @@ class World:
                     neighbors.append(neighbor_id)
 
         return random.choice(neighbors) if neighbors else None
+
+    def _get_vehicle_ahead(self, v: Vehicle, max_distance: float) -> Optional[tuple[Vehicle, float]]:
+        """Find the closest vehicle ahead on the same route within max_distance.
+        Returns (vehicle, distance) or None if no vehicle found.
+        """
+        my_pos = self.vehicle_pos(v)
+
+        # Check vehicles on current segment
+        for other in self.vehicles.values():
+            if other.id == v.id or not other.alive:
+                continue
+
+            # Only check vehicles on same segment traveling same direction
+            if other.current_node_id == v.current_node_id and other.next_node_id == v.next_node_id:
+                # Same segment, check if ahead (other.t > v.t)
+                if other.t > v.t:
+                    other_pos = self.vehicle_pos(other)
+                    distance = dist(my_pos, other_pos)
+                    if distance <= max_distance:
+                        return (other, distance)
+
+            # Check vehicles on next segment (if we're near end of current segment)
+            if v.t > 0.7 and v.planned_route:
+                next_next_node = v.planned_route[0] if v.planned_route else None
+                if (other.current_node_id == v.next_node_id and
+                    other.next_node_id == next_next_node):
+                    # Other is on our next segment
+                    other_pos = self.vehicle_pos(other)
+                    distance = dist(my_pos, other_pos)
+                    if distance <= max_distance:
+                        return (other, distance)
+
+        return None
+
+    def _check_collision(self, v1: Vehicle, v2: Vehicle) -> bool:
+        """Check if two vehicles are colliding (overlapping bounding circles)."""
+        pos1 = self.vehicle_pos(v1)
+        pos2 = self.vehicle_pos(v2)
+        distance = dist(pos1, pos2)
+        return distance < COLLISION_DETECTION_RADIUS
 
     # -- convenience queries --
     def vehicle_pos(self, v: Vehicle) -> tuple[float, float]:
