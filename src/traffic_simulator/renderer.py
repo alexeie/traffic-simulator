@@ -78,6 +78,7 @@ class Renderer:
     # Roads
     # ------------------------------------------------------------------
     def _draw_roads(self, world: World, selected_seg_id: Optional[int]) -> None:
+        # Simple approach: just draw roads with thicker lines and filled circles at all nodes
         for s in world.segments.values():
             na, nb = world.nodes[s.node_a_id], world.nodes[s.node_b_id]
             ax, ay, bx, by = int(na.x), int(na.y), int(nb.x), int(nb.y)
@@ -86,6 +87,7 @@ class Renderer:
             if s.id == selected_seg_id:
                 pygame.draw.line(self.screen, C_NODE_SELECTED, (ax, ay), (bx, by), ROAD_WIDTH + 4)
 
+            # Draw main road
             pygame.draw.line(self.screen, C_ROAD, (ax, ay), (bx, by), ROAD_WIDTH)
 
             # dashed centre line
@@ -101,6 +103,15 @@ class Renderer:
                         (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), 1,
                     )
                     d += dash + gap
+
+        # Draw circles at ALL connection points to create smooth joins
+        for n in world.nodes.values():
+            if n.is_roundabout_center:
+                continue
+            connections = len(world.adj.get(n.id, []))
+            if connections >= 2:  # At any connection point (not dead ends)
+                # Draw circle with same radius as road width to create smooth corners
+                pygame.draw.circle(self.screen, C_ROAD, (int(n.x), int(n.y)), ROAD_WIDTH // 2)
 
     # ------------------------------------------------------------------
     # Roundabout decorative centres

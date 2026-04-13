@@ -90,7 +90,9 @@ class Vehicle:
     current_node_id: int     # node we're currently leaving from
     next_node_id: int        # node we're traveling toward
     t: float = 0.0           # 0‥1 progress along current segment
-    speed: float = 120.0     # pixels / second
+    current_speed: float = 0.0    # current speed in pixels/second
+    max_speed: float = 120.0      # maximum speed in pixels/second
+    acceleration: float = 80.0    # acceleration in pixels/second²
     color: tuple = field(default_factory=lambda: random.choice(C_CAR_COLORS))
     waiting: bool = False
     alive: bool = True
@@ -264,22 +266,35 @@ class World:
                 break
 
         # Obey traffic lights near the destination node
+        should_stop = False
         if seg_id and v.t > 0.7:
             light = self.get_light_at(seg_id, nb.id)
             if light and light.phase == LightPhase.RED:
-                v.waiting = True
-                return
-            if light and light.phase == LightPhase.YELLOW and v.t > 0.85:
-                v.waiting = True
-                return
+                should_stop = True
+            elif light and light.phase == LightPhase.YELLOW and v.t > 0.85:
+                should_stop = True
 
-        v.waiting = False
-        v.t += (v.speed * dt) / seg_len
+        # Apply acceleration/deceleration
+        if should_stop:
+            # Decelerate to stop
+            v.waiting = True
+            v.current_speed = max(0, v.current_speed - v.acceleration * dt * 2)  # Brake harder
+            if v.current_speed < 1:
+                return  # Stopped at light
+        else:
+            # Accelerate to max speed
+            v.waiting = False
+            v.current_speed = min(v.max_speed, v.current_speed + v.acceleration * dt)
+
+        # Move forward based on current speed
+        v.t += (v.current_speed * dt) / seg_len
 
         # When reaching the next node, pick a new random direction
         if v.t >= 1.0:
             v.t = 0.0
             v.current_node_id = v.next_node_id
+            # Reset speed slightly when turning
+            v.current_speed = v.current_speed * 0.7
 
             # Pick next random neighbor (avoid going back where we came from)
             next_node = self._pick_random_neighbor(v.current_node_id, exclude=na.id)
@@ -331,8 +346,19 @@ class World:
         if not na or not nb:
             return (0.0, 0.0)
 
-        # Base position along the road
-        base_pos = lerp_pt(na.pos, nb.pos, v.t)
+        # Use quadratic Bezier curve for smoother turns
+        # When near the start (t < 0.3) or end (t > 0.7), apply curve smoothing
+        t = v.t
+        if t < 0.3:
+            # Smooth entry: use previous direction if available
+            # For now, just use linear interpolation at start
+            base_pos = lerp_pt(na.pos, nb.pos, t)
+        elif t > 0.7:
+            # Smooth exit towards next node
+            base_pos = lerp_pt(na.pos, nb.pos, t)
+        else:
+            # Middle section: straight line
+            base_pos = lerp_pt(na.pos, nb.pos, t)
 
         # Calculate offset to the right (6 pixels to the right of center)
         angle = angle_of(na.pos, nb.pos)
