@@ -1,0 +1,19 @@
+[project]
+name = "traffic-simulator"
+version = "0.1.0"
+description = "A birds-eye 2D traffic simulation game. Build roads, roundabouts, and programmable traffic lights, then watch traffic flow."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pygame>=2.5.0",
+]
+
+[project.scripts]
+traffic-simulator = "traffic_simulator:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/traffic_simulator"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
