@@ -39,6 +39,7 @@ class Renderer:
         hovered_node_id: Optional[int],
         selected_node_id: Optional[int],
         selected_seg_id: Optional[int],
+        selected_roundabout_id: Optional[int],
         buttons: list[Button],
         light_panel: LightConfigPanel,
         show_help: bool,
@@ -52,7 +53,7 @@ class Renderer:
             self._draw_grid()
 
         self._draw_roads(world, selected_seg_id)
-        self._draw_roundabout_centers(world)
+        self._draw_roundabout_centers(world, selected_roundabout_id)
         self._draw_nodes(world, first_node_id, hovered_node_id, selected_node_id)
         self._draw_lights(world)
         self._draw_vehicles(world)
@@ -116,11 +117,17 @@ class Renderer:
     # ------------------------------------------------------------------
     # Roundabout decorative centres
     # ------------------------------------------------------------------
-    def _draw_roundabout_centers(self, world: World) -> None:
+    def _draw_roundabout_centers(self, world: World, selected_roundabout_id: Optional[int]) -> None:
         for n in world.nodes.values():
             if not n.is_roundabout_center:
                 continue
             ix, iy, ir = int(n.x), int(n.y), int(n.roundabout_radius)
+
+            # Highlight selected roundabout
+            if n.id == selected_roundabout_id:
+                # Draw selection glow
+                pygame.draw.circle(self.screen, C_NODE_SELECTED, (ix, iy), ir + 6, 4)
+
             pygame.draw.circle(self.screen, C_ROUNDABOUT, (ix, iy), ir)
             pygame.draw.circle(self.screen, C_ROUNDABOUT_RING, (ix, iy), ir, 3)
             inner = int(n.roundabout_radius * 0.45)

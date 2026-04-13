@@ -58,6 +58,7 @@ class TrafficSimApp:
         self.selected_node_id: Optional[int] = None
         self.selected_seg_id: Optional[int] = None
         self.selected_light_id: Optional[int] = None
+        self.selected_roundabout_id: Optional[int] = None
         self.dragging_node_id: Optional[int] = None
 
         self.light_panel = LightConfigPanel()
@@ -119,7 +120,7 @@ class TrafficSimApp:
 
     def _clear_all(self) -> None:
         self.world = World()
-        self.first_node_id = self.selected_node_id = self.selected_seg_id = self.selected_light_id = None
+        self.first_node_id = self.selected_node_id = self.selected_seg_id = self.selected_light_id = self.selected_roundabout_id = None
 
     # ------------------------------------------------------------------
     # Finders
@@ -135,6 +136,13 @@ class TrafficSimApp:
             na, nb = self.world.nodes[s.node_a_id], self.world.nodes[s.node_b_id]
             if _point_near_segment(pos, na.pos, nb.pos, ROAD_WIDTH // 2 + 4):
                 return s.id
+        return None
+
+    def _find_roundabout_at(self, pos, radius=70) -> Optional[int]:
+        """Find a roundabout center node at the given position"""
+        for n in self.world.nodes.values():
+            if n.is_roundabout_center and dist(pos, n.pos) < radius:
+                return n.id
         return None
 
     def _find_light_at(self, pos, radius=14) -> Optional[int]:
@@ -178,6 +186,7 @@ class TrafficSimApp:
                 hovered_node_id=self.hovered_node_id,
                 selected_node_id=self.selected_node_id,
                 selected_seg_id=self.selected_seg_id,
+                selected_roundabout_id=self.selected_roundabout_id,
                 buttons=self.buttons,
                 light_panel=self.light_panel,
                 show_help=self.show_help,
@@ -240,7 +249,14 @@ class TrafficSimApp:
             elif self.selected_seg_id:
                 self.world.remove_segment(self.selected_seg_id)
                 self.selected_seg_id = None
+            elif self.selected_roundabout_id:
+                self.world.remove_node(self.selected_roundabout_id)
+                self.selected_roundabout_id = None
+                self.first_node_id = None  # Clear in case it was connected
             elif self.selected_node_id:
+                # Check if this was the first_node_id
+                if self.first_node_id == self.selected_node_id:
+                    self.first_node_id = None
                 self.world.remove_node(self.selected_node_id)
                 self.selected_node_id = None
         elif key == pygame.K_ESCAPE:
@@ -264,11 +280,23 @@ class TrafficSimApp:
             self._click_light(mouse)
 
     def _on_right_click(self) -> None:
-        self.first_node_id = self.selected_node_id = self.selected_seg_id = self.selected_light_id = None
+        self.first_node_id = self.selected_node_id = self.selected_seg_id = self.selected_light_id = self.selected_roundabout_id = None
 
     # -- mode-specific clicks --
 
     def _click_road(self, pos) -> None:
+        # Check for roundabout selection first
+        rb_id = self._find_roundabout_at(pos)
+        if rb_id:
+            self.selected_roundabout_id = rb_id
+            self.selected_node_id = self.selected_seg_id = None
+            self.first_node_id = None
+            return
+
+        # Validate that first_node_id still exists (might have been deleted)
+        if self.first_node_id is not None and self.first_node_id not in self.world.nodes:
+            self.first_node_id = None
+
         nid = self._find_node_at(pos)
         if self.first_node_id is None:
             if nid:
@@ -278,6 +306,7 @@ class TrafficSimApp:
                 n = self.world.add_node(*p)
                 self.first_node_id = n.id
             self.selected_node_id = self.first_node_id
+            self.selected_roundabout_id = None
         else:
             if nid and nid != self.first_node_id:
                 self.world.add_segment(self.first_node_id, nid)
@@ -288,8 +317,17 @@ class TrafficSimApp:
                 self.world.add_segment(self.first_node_id, n.id)
                 self.first_node_id = n.id
             self.selected_node_id = self.first_node_id
+            self.selected_roundabout_id = None
 
     def _click_roundabout(self, pos) -> None:
+        # Check if clicking on existing roundabout to select it
+        rb_id = self._find_roundabout_at(pos)
+        if rb_id:
+            self.selected_roundabout_id = rb_id
+            self.selected_node_id = self.selected_seg_id = None
+            return
+
+        # Otherwise create new roundabout
         p = _snap(pos) if self.grid_snap else pos
         self.world.add_roundabout(p[0], p[1])
 
