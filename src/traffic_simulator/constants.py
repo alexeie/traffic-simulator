@@ -43,3 +43,6 @@ C_CAR_COLORS = [
     (100, 210, 130),(200, 120, 220),(255, 150, 80),
     (180, 180, 200),(255, 255, 255),
 ]
+
+# Driver behavior distribution
+HAZARDOUS_DRIVER_RATIO = 0.2  # 20% of drivers are hazardous, 80% normal

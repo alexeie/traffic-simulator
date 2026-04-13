@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
-from traffic_simulator.constants import C_CAR_COLORS
+from traffic_simulator.constants import C_CAR_COLORS, HAZARDOUS_DRIVER_RATIO
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,6 +35,11 @@ class LightPhase(Enum):
     RED = auto()
     YELLOW = auto()
     GREEN = auto()
+
+
+class DriverBehavior(Enum):
+    NORMAL = auto()
+    HAZARDOUS = auto()
 
 
 @dataclass
@@ -89,6 +94,7 @@ class Vehicle:
     id: int
     current_node_id: int     # node we're currently leaving from
     next_node_id: int        # node we're traveling toward
+    planned_route: list[int] = field(default_factory=list)  # upcoming nodes in order
     t: float = 0.0           # 0‥1 progress along current segment
     current_speed: float = 0.0    # current speed in pixels/second
     max_speed: float = 120.0      # maximum speed in pixels/second
@@ -96,6 +102,8 @@ class Vehicle:
     color: tuple = field(default_factory=lambda: random.choice(C_CAR_COLORS))
     waiting: bool = False
     alive: bool = True
+    behavior: DriverBehavior = DriverBehavior.NORMAL  # driver type
+    stop_timer: float = 0.0  # for intermittent hazardous stops
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +220,32 @@ class World:
         first_seg = self.segments[random.choice(connected_segs)]
         next_node_id = first_seg.node_b_id if first_seg.node_a_id == start_node.id else first_seg.node_a_id
 
-        v = Vehicle(self._new_id(), start_node.id, next_node_id)
+        # Assign behavior based on HAZARDOUS_DRIVER_RATIO
+        behavior = (DriverBehavior.HAZARDOUS
+                    if random.random() < HAZARDOUS_DRIVER_RATIO
+                    else DriverBehavior.NORMAL)
+
+        # Assign color and performance based on behavior
+        if behavior == DriverBehavior.NORMAL:
+            color = (70, 160, 220)  # Blue
+            max_speed = 120.0
+            acceleration = 80.0
+        else:  # HAZARDOUS
+            color = (220, 70, 70)  # Red
+            max_speed = 150.0  # 25% faster
+            acceleration = 100.0  # 25% faster acceleration
+
+        v = Vehicle(
+            self._new_id(),
+            start_node.id,
+            next_node_id,
+            behavior=behavior,
+            color=color,
+            max_speed=max_speed,
+            acceleration=acceleration
+        )
+        # Pre-plan the next 2-3 nodes ahead
+        self._plan_ahead(v, 3)
         self.vehicles[v.id] = v
         return v
 
@@ -229,6 +262,22 @@ class World:
             self._tick_vehicle(v, dt)
         for vid in dead:
             self.vehicles.pop(vid, None)
+
+    def _plan_ahead(self, v: Vehicle, num_nodes: int = 3) -> None:
+        """Plan the next few nodes ahead for smoother navigation"""
+        # Clear existing plan beyond current next_node
+        v.planned_route.clear()
+
+        current = v.next_node_id
+        previous = v.current_node_id
+
+        for _ in range(num_nodes):
+            next_node = self._pick_random_neighbor(current, exclude=previous)
+            if not next_node:
+                break
+            v.planned_route.append(next_node)
+            previous = current
+            current = next_node
 
     def _tick_vehicle(self, v: Vehicle, dt: float) -> None:
         # Get current and next nodes
@@ -265,44 +314,98 @@ class World:
                 seg_id = sid
                 break
 
-        # Obey traffic lights near the destination node
+        # Obey traffic lights near the destination node (behavior-dependent)
         should_stop = False
         if seg_id and v.t > 0.7:
             light = self.get_light_at(seg_id, nb.id)
-            if light and light.phase == LightPhase.RED:
-                should_stop = True
-            elif light and light.phase == LightPhase.YELLOW and v.t > 0.85:
-                should_stop = True
+            if light:
+                if v.behavior == DriverBehavior.NORMAL:
+                    # Normal drivers: obey all lights
+                    if light.phase == LightPhase.RED:
+                        should_stop = True
+                    elif light.phase == LightPhase.YELLOW and v.t > 0.85:
+                        should_stop = True
+                else:  # HAZARDOUS
+                    # Hazardous drivers: always run yellows, 20% chance to run reds
+                    if light.phase == LightPhase.RED:
+                        should_stop = random.random() > 0.2  # 80% obey, 20% run red
+                    # Never stop for yellow lights
+
+        # Check if approaching a sharp turn (when t > 0.6)
+        target_speed = v.max_speed
+        if v.t > 0.6 and v.planned_route:
+            # Look ahead to see what the turn angle will be
+            next_node_id = v.planned_route[0]
+            next_node = self.nodes.get(next_node_id)
+            if next_node:
+                # Calculate turn angle
+                angle_in = angle_of(na.pos, nb.pos)
+                angle_out = angle_of(nb.pos, next_node.pos)
+                turn_angle = abs(angle_out - angle_in)
+                # Normalize to 0-π range
+                if turn_angle > math.pi:
+                    turn_angle = 2 * math.pi - turn_angle
+
+                # Sharp turn if angle > 45 degrees (π/4)
+                if turn_angle > math.pi / 4:
+                    # Reduce target speed based on sharpness
+                    # 45° turn: 70% speed, 90° turn: 40% speed
+                    turn_factor = 1.0 - (turn_angle / math.pi) * 0.6
+                    target_speed = v.max_speed * max(0.4, turn_factor)
+
+        # Hazardous drivers: random intermittent stops (0.1% chance per frame when moving)
+        if v.behavior == DriverBehavior.HAZARDOUS and v.current_speed > 10:
+            if v.stop_timer > 0:
+                # Currently in a random stop
+                v.stop_timer -= dt
+                v.waiting = True
+                v.current_speed = max(0, v.current_speed - v.acceleration * dt * 3)  # Brake hard
+                if v.stop_timer <= 0:
+                    v.waiting = False
+                if v.current_speed < 1:
+                    return  # Stay stopped during timer
+            elif random.random() < 0.001:  # 0.1% chance per frame to randomly stop
+                v.stop_timer = random.uniform(0.5, 1.5)  # Stop for 0.5-1.5 seconds
+                v.waiting = True
 
         # Apply acceleration/deceleration
         if should_stop:
-            # Decelerate to stop
+            # Decelerate to stop at traffic light
             v.waiting = True
             v.current_speed = max(0, v.current_speed - v.acceleration * dt * 2)  # Brake harder
             if v.current_speed < 1:
                 return  # Stopped at light
-        else:
-            # Accelerate to max speed
+        elif v.current_speed > target_speed:
+            # Decelerate for upcoming turn
             v.waiting = False
-            v.current_speed = min(v.max_speed, v.current_speed + v.acceleration * dt)
+            v.current_speed = max(target_speed, v.current_speed - v.acceleration * dt * 1.5)
+        else:
+            # Accelerate to target speed
+            v.waiting = False
+            v.current_speed = min(target_speed, v.current_speed + v.acceleration * dt)
 
         # Move forward based on current speed
         v.t += (v.current_speed * dt) / seg_len
 
-        # When reaching the next node, pick a new random direction
+        # When reaching the next node, use planned route
         if v.t >= 1.0:
             v.t = 0.0
             v.current_node_id = v.next_node_id
-            # Reset speed slightly when turning
-            v.current_speed = v.current_speed * 0.7
 
-            # Pick next random neighbor (avoid going back where we came from)
-            next_node = self._pick_random_neighbor(v.current_node_id, exclude=na.id)
-            if not next_node:
-                v.alive = False
-                return
-
-            v.next_node_id = next_node
+            # Pop next node from planned route
+            if v.planned_route:
+                v.next_node_id = v.planned_route.pop(0)
+                # Plan further ahead to maintain lookahead buffer
+                if len(v.planned_route) < 2:
+                    self._plan_ahead(v, 3)
+            else:
+                # Fallback if plan is empty
+                next_node = self._pick_random_neighbor(v.current_node_id, exclude=na.id)
+                if not next_node:
+                    v.alive = False
+                    return
+                v.next_node_id = next_node
+                self._plan_ahead(v, 3)
 
     def _pick_random_neighbor(self, node_id: int, exclude: Optional[int] = None) -> Optional[int]:
         """Pick a random neighboring node, optionally excluding one (to avoid U-turns)
@@ -378,4 +481,29 @@ class World:
         nb = self.nodes.get(v.next_node_id)
         if not na or not nb:
             return 0.0
-        return angle_of(na.pos, nb.pos)
+
+        # Current segment angle
+        current_angle = angle_of(na.pos, nb.pos)
+
+        # Smooth steering: interpolate angle at end of segment
+        if v.t > 0.85 and v.planned_route:
+            # At end of segment, start turning towards next direction (only last 15% of segment)
+            next_node_id = v.planned_route[0]
+            next_node = self.nodes.get(next_node_id)
+            if next_node:
+                next_angle = angle_of(nb.pos, next_node.pos)
+                # Blend angles based on t (0.85 = full current_angle, 1.0 = full next_angle)
+                blend = (v.t - 0.85) / 0.15
+                return self._interpolate_angle(current_angle, next_angle, blend)
+
+        return current_angle
+
+    def _interpolate_angle(self, angle1: float, angle2: float, t: float) -> float:
+        """Interpolate between two angles, taking the shortest path"""
+        # Normalize angles to -π to π
+        diff = angle2 - angle1
+        while diff > math.pi:
+            diff -= 2 * math.pi
+        while diff < -math.pi:
+            diff += 2 * math.pi
+        return angle1 + diff * t
